@@ -18,3 +18,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
   CMD curl -sSf http://localhost:${PORT}/ || exit 1
 
 CMD ["node", "index.js"]
+
+// check for the automatically trigger pipeline 
