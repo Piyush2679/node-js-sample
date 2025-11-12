@@ -19,4 +19,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
 
 CMD ["node", "index.js"]
 
-// check for the automatically trigger pipeline 
+# check for the automatically trigger pipeline 
