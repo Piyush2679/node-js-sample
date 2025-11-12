@@ -100,8 +100,10 @@ pipeline {
       steps {
         script {
           if (isUnix()) {
+            sh 'docker logout || true'
             sh "docker build -t ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${env.IMAGE_TAG} ."
           } else {
+            bat 'docker logout || exit 0'
             bat "docker build -t ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${env.IMAGE_TAG} ."
           }
         }
