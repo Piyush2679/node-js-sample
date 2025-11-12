@@ -27,6 +27,10 @@ pipeline {
             branch = out.readLines().findAll { it?.trim() }.last()
           }
 
+          if (branch == 'HEAD' && env.GIT_BRANCH) {
+            branch = env.GIT_BRANCH.replaceAll('origin/', '')
+          }
+
           def commit = null
           if (isUnix()) {
             commit = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
@@ -57,25 +61,24 @@ pipeline {
           }
 
           if (npmExists) {
-            echo "npm found on agent — running npm ci"
+            echo "npm found on agent — running npm install"
             if (isUnix()) {
-              sh 'npm ci'
+              sh 'npm install'
             } else {
-              bat 'npm ci'
+              bat 'npm install'
             }
           } else {
             echo "npm not found on agent — running npm inside node:18-alpine container (requires docker)"
-           
             if (isUnix()) {
               sh '''
-                docker run --rm -v "$PWD":/app -w /app node:18-alpine sh -c "npm ci || exit 0; if grep -q '\\"test\\"\\s*:' package.json; then npm test || true; fi"
+                docker run --rm -v "$PWD":/app -w /app node:18-alpine sh -c "npm install || exit 0; if grep -q '\\"test\\"\\s*:' package.json; then npm test || true; fi"
               '''
             } else {
-              bat 'docker run --rm -v "%cd%":/app -w /app node:18-alpine powershell -Command "npm ci; if ((Get-Content package.json) -match \\"\\\\\\"test\\\\\\"\\s*:\\\\") { npm test }"'
+              bat 'docker run --rm -v "%cd%":/app -w /app node:18-alpine powershell -Command "npm install; if ((Get-Content package.json) -match \\"\\\\\\"test\\\\\\"\\s*:\\\\") { npm test }"'
             }
           }
 
-          if (fileExists('package.json') && npmExists) {
+          if (fileExists('package.json')) {
             def hasTest = false
             if (isUnix()) {
               hasTest = (sh(returnStatus: true, script: "grep -q '\"test\"\\s*:' package.json") == 0)
