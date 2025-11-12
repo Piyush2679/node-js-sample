@@ -2,7 +2,7 @@ pipeline {
   agent any
 
   environment {
-    DOCKER_HUB_NAMESPACE = 'PiyushInsys'
+    DOCKER_HUB_NAMESPACE = 'piyushinsys'
     DOCKER_REPO          = 'node-js-sample'
     DOCKERHUB_CRED       = 'dockerhub-practice-id'
   }
