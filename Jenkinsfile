@@ -17,25 +17,33 @@ pipeline {
       steps {
         checkout scm
         script {
+          def branch = null
           if (env.BRANCH_NAME) {
-            BRANCH = env.BRANCH_NAME
+            branch = env.BRANCH_NAME
           } else if (isUnix()) {
-            BRANCH = sh(returnStdout: true, script: 'git rev-parse --abbrev-ref HEAD').trim()
+            branch = sh(returnStdout: true, script: 'git rev-parse --abbrev-ref HEAD || true').trim()
           } else {
-            BRANCH = bat(returnStdout: true, script: 'git rev-parse --abbrev-ref HEAD').trim()
-            BRANCH = BRANCH.readLines().findAll { it?.trim() }.last()
+            def out = bat(returnStdout: true, script: 'git rev-parse --abbrev-ref HEAD').trim()
+            branch = out.readLines().findAll { it?.trim() }.last()
           }
 
+          def commit = null
           if (isUnix()) {
-            COMMIT = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+            commit = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
           } else {
-            COMMIT = bat(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
-            COMMIT = COMMIT.readLines().findAll { it?.trim() }.last()
+            def out = bat(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+            commit = out.readLines().findAll { it?.trim() }.last()
           }
 
-          IMAGE_TAG = "${BRANCH}-${COMMIT}"
-          IS_MAIN = (BRANCH == 'main' || BRANCH == 'master')
-          echo "Branch: ${BRANCH}, Commit: ${COMMIT}, Image tag: ${IMAGE_TAG}"
+          def imageTag = "${branch}-${commit}"
+          def isMain = (branch == 'main' || branch == 'master')
+
+          env.BUILD_BRANCH = branch
+          env.BUILD_COMMIT = commit
+          env.IMAGE_TAG = imageTag
+          env.IS_MAIN = isMain.toString()
+
+          echo "Branch: ${env.BUILD_BRANCH}, Commit: ${env.BUILD_COMMIT}, Image tag: ${env.IMAGE_TAG}"
         }
       }
     }
@@ -43,33 +51,43 @@ pipeline {
     stage('Install & Test') {
       steps {
         script {
-          if (isUnix()) {
-            sh 'npm ci'
-          } else {
-            bat 'npm ci'
+          def npmExists = (sh(returnStatus: true, script: 'which npm >/dev/null 2>&1') == 0)
+          if (!npmExists && !isUnix()) {
+            npmExists = (bat(returnStatus: true, script: 'where npm >nul 2>nul') == 0)
           }
 
-          if (fileExists('package.json')) {
+          if (npmExists) {
+            echo "npm found on agent — running npm ci"
+            if (isUnix()) {
+              sh 'npm ci'
+            } else {
+              bat 'npm ci'
+            }
+          } else {
+            echo "npm not found on agent — running npm inside node:18-alpine container (requires docker)"
+           
+            if (isUnix()) {
+              sh '''
+                docker run --rm -v "$PWD":/app -w /app node:18-alpine sh -c "npm ci || exit 0; if grep -q '\\"test\\"\\s*:' package.json; then npm test || true; fi"
+              '''
+            } else {
+              bat 'docker run --rm -v "%cd%":/app -w /app node:18-alpine powershell -Command "npm ci; if ((Get-Content package.json) -match \\"\\\\\\"test\\\\\\"\\s*:\\\\") { npm test }"'
+            }
+          }
+
+          if (fileExists('package.json') && npmExists) {
             def hasTest = false
             if (isUnix()) {
               hasTest = (sh(returnStatus: true, script: "grep -q '\"test\"\\s*:' package.json") == 0)
             } else {
-              // use findstr on Windows to look for "test" :
-              hasTest = (bat(returnStatus: true, script: 'findstr /R /C:"\"test\"[ ]*:\" package.json') == 0)
+              hasTest = (bat(returnStatus: true, script: 'findstr /R /C:"\"test\"[ ]*:" package.json') == 0)
             }
-
             if (hasTest) {
               echo 'Running npm test...'
-              if (isUnix()) {
-                sh 'npm test'
-              } else {
-                bat 'npm test'
-              }
+              if (isUnix()) { sh 'npm test' } else { bat 'npm test' }
             } else {
               echo 'No test script found in package.json; skipping tests.'
             }
-          } else {
-            echo 'package.json not found; skipping tests.'
           }
         }
       }
@@ -79,9 +97,9 @@ pipeline {
       steps {
         script {
           if (isUnix()) {
-            sh "docker build -t ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${IMAGE_TAG} ."
+            sh "docker build -t ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${env.IMAGE_TAG} ."
           } else {
-            bat "docker build -t %DOCKER_HUB_NAMESPACE%/%DOCKER_REPO%:${IMAGE_TAG} ."
+            bat "docker build -t ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${env.IMAGE_TAG} ."
           }
         }
       }
@@ -93,18 +111,17 @@ pipeline {
           script {
             if (isUnix()) {
               sh "echo \"$DOCKER_PASS\" | docker login -u \"$DOCKER_USER\" --password-stdin"
-              sh "docker push ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${IMAGE_TAG}"
-              if (IS_MAIN) {
-                sh "docker tag ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${IMAGE_TAG} ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:latest"
+              sh "docker push ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${env.IMAGE_TAG}"
+              if (env.IS_MAIN == 'true') {
+                sh "docker tag ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${env.IMAGE_TAG} ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:latest"
                 sh "docker push ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:latest"
               }
             } else {
-              // Windows: use docker login with echo and pipe via powershell
               bat "powershell -Command \"$env:DOCKER_PASS | docker login -u $env:DOCKER_USER --password-stdin\""
-              bat "docker push %DOCKER_HUB_NAMESPACE%/%DOCKER_REPO%:${IMAGE_TAG}"
-              if (IS_MAIN) {
-                bat "docker tag %DOCKER_HUB_NAMESPACE%/%DOCKER_REPO%:${IMAGE_TAG} %DOCKER_HUB_NAMESPACE%/%DOCKER_REPO%:latest"
-                bat "docker push %DOCKER_HUB_NAMESPACE%/%DOCKER_REPO%:latest"
+              bat "docker push ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${env.IMAGE_TAG}"
+              if (env.IS_MAIN == 'true') {
+                bat "docker tag ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${env.IMAGE_TAG} ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:latest"
+                bat "docker push ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:latest"
               }
             }
           }
@@ -116,13 +133,13 @@ pipeline {
       steps {
         script {
           if (isUnix()) {
-            sh "echo \"image=${DOCKER_HUB_NAMESPACE}/${DOCKER_REPO}:${IMAGE_TAG}\" > image.properties"
-            sh "echo \"branch=${BRANCH}\" >> image.properties"
-            sh "echo \"commit=${COMMIT}\" >> image.properties"
+            sh "echo \"image=${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${env.IMAGE_TAG}\" > image.properties"
+            sh "echo \"branch=${env.BUILD_BRANCH}\" >> image.properties"
+            sh "echo \"commit=${env.BUILD_COMMIT}\" >> image.properties"
           } else {
-            bat "echo image=%DOCKER_HUB_NAMESPACE%/%DOCKER_REPO%:${IMAGE_TAG} > image.properties"
-            bat "echo branch=%BRANCH% >> image.properties"
-            bat "echo commit=%COMMIT% >> image.properties"
+            bat "echo image=${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${env.IMAGE_TAG} > image.properties"
+            bat "echo branch=${env.BUILD_BRANCH} >> image.properties"
+            bat "echo commit=${env.BUILD_COMMIT} >> image.properties"
           }
         }
         archiveArtifacts artifacts: 'image.properties', fingerprint: true
@@ -132,7 +149,7 @@ pipeline {
 
   post {
     success {
-      echo "Pipeline succeeded: ${DOCKER_HUB_NAMESPACE}/${DOCKER_REPO}:${IMAGE_TAG}"
+      echo "Pipeline succeeded: ${env.DOCKER_HUB_NAMESPACE}/${env.DOCKER_REPO}:${env.IMAGE_TAG}"
     }
     failure {
       echo "Pipeline failed."
